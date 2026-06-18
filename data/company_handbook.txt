@@ -1,0 +1,27 @@
+Aurora Robotics - Company Handbook (Sample)
+
+About the company:
+Aurora Robotics was founded in 2019 to build small warehouse robots that move shelves
+instead of having workers walk to them. The company grew from 4 engineers to 60 employees
+by 2023 and now operates in 3 countries: Pakistan, the UAE, and Germany.
+
+Product - The A-200 Shelf-Bot:
+The A-200 is Aurora's main product. It can carry up to 200kg, navigates a warehouse using
+floor markers combined with onboard cameras, and recharges automatically at docking stations
+placed every 50 meters. A single A-200 can run for about 8 hours before needing a recharge.
+
+Research team:
+In 2024, Aurora started a dedicated research team. Their focus is building a robotic arm
+attachment so the A-200 can restock shelves automatically instead of just moving them.
+Early prototypes can place small boxes onto a shelf with about 90% accuracy.
+
+Customer support policy:
+Customers with an active support contract can reach the support team via email at
+support@aurorarobotics.example or through the in-app chat. Standard response time is
+4 business hours. Robots under warranty are repaired free of charge within 30 days of
+a reported issue.
+
+Office locations:
+- Lahore, Pakistan (engineering HQ)
+- Dubai, UAE (regional sales office)
+- Berlin, Germany (EU operations)
