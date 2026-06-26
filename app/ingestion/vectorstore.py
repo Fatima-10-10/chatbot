@@ -48,9 +48,14 @@ def get_vectorstore() -> PineconeVectorStore:
     )
 
 
-def upsert_documents(chunks: list[Document]) -> int:
-    """Embeds and pushes chunks into the index. Returns how many chunks were upserted."""
+def upsert_documents(chunks: list[Document], filename: str) -> int:
+    """Embeds and pushes chunks into the index, tagged with the source filename."""
     create_index_if_missing()
     vectorstore = get_vectorstore()
+
+    # Tag each chunk with the filename so we can filter by document later
+    for chunk in chunks:
+        chunk.metadata["source_file"] = filename
+
     vectorstore.add_documents(chunks)
     return len(chunks)

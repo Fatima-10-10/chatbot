@@ -1,18 +1,22 @@
 """
-Ingest endpoint: POST /ingest
+Chat endpoint: POST /chat
 """
 
 from fastapi import APIRouter
 
-from app.api.schemas import IngestRequest, IngestResponse
-from app.ingestion.loader import load_and_split
-from app.ingestion.vectorstore import upsert_documents
+from app.api.schemas import ChatRequest, ChatResponse
+from app.rag.chain import get_rag_chatbot
 
 router = APIRouter()
 
 
-@router.post("/ingest", response_model=IngestResponse)
-def ingest(request: IngestRequest) -> IngestResponse:
-    chunks = load_and_split(request.file_path)
-    count = upsert_documents(chunks)
-    return IngestResponse(chunks_upserted=count)
+@router.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest) -> ChatResponse:
+    # Build chatbot with optional document filter per request
+    chatbot = get_rag_chatbot(source_file=request.document_filter)
+
+    result = chatbot.invoke(
+        {"input": request.message},
+        config={"configurable": {"session_id": request.session_id}},
+    )
+    return ChatResponse(answer=result.answer, confidence=result.confidence)
