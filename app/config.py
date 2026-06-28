@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     pinecone_index_name: str = "langchain-learning"
 
     # --- Document ingestion ---
-    chunk_size: int = 300
-    chunk_overlap: int = 50
+    chunk_size: int = 500
+    chunk_overlap: int = 100
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
