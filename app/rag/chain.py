@@ -1,88 +1,149 @@
 """
-RAG chain with manual memory management.
-
-RunnableWithMessageHistory doesn't work with PydanticOutputParser because
-it can't save custom objects to history. Fix: save the raw model response
-to memory manually BEFORE parsing, then parse separately.
+RAG chain with:
+- Manual memory management (fixes RunnableWithMessageHistory + PydanticOutputParser incompatibility)
+- Question routing (document vs conversational)
+- Query rephrasing (standalone questions from follow-ups)
+- Query expansion (multiple phrasings for better retrieval)
+- Result deduplication (merge results from multiple queries)
 """
 
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 
 from app.core.llm import get_llm
 from app.core.memory import get_session_history, get_history_messages
 from app.core.parsers import chat_answer_parser
-from app.core.prompts import get_rag_prompt, get_rephrase_prompt
+from app.core.prompts import get_rag_prompt, get_rephrase_prompt, get_query_expansion_prompt
 from app.rag.retriever import get_retriever
 
+# Load once at module level so the embedding model isn't reloaded on every request
+_retriever_cache: dict = {}
+
+def _get_cached_retriever(k: int, source_file: str | None):
+    key = (k, source_file)
+    if key not in _retriever_cache:
+        _retriever_cache[key] = get_retriever(k=k, source_file=source_file)
+    return _retriever_cache[key]
 
 def _format_docs(docs: list[Document]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
+def _deduplicate(docs: list[Document]) -> list[Document]:
+    """Remove duplicate chunks based on content."""
+    seen = set()
+    unique = []
+    for doc in docs:
+        if doc.page_content not in seen:
+            seen.add(doc.page_content)
+            unique.append(doc)
+    return unique
+
+
 def get_rag_chatbot(source_file: str | None = None):
-    retriever = get_retriever(k=10, source_file=source_file)
+    retriever = _get_cached_retriever(k=10, source_file=source_file)
     model = get_llm()
+    str_parser = StrOutputParser()
     rephrase_prompt = get_rephrase_prompt()
     rag_prompt = get_rag_prompt()
-    str_parser = StrOutputParser()
+    expansion_prompt = get_query_expansion_prompt()
 
-    def rephrase_question(x: dict) -> str:
-        session_id = x.get("session_id", "")
-        history = get_history_messages(session_id) if session_id else []
+    def rephrase_question(user_input: str, session_id: str) -> str:
+        """Rewrites follow-up questions into standalone questions."""
+        history = get_history_messages(session_id)
         if not history:
-            return x["input"]
+            return user_input
         messages = rephrase_prompt.format_messages(
             history=history,
-            input=x["input"],
+            input=user_input,
         )
         return str_parser.invoke(model.invoke(messages))
 
-    def is_document_question(x: dict) -> bool:
-        session_id = x.get("session_id", "")
-        history = get_history_messages(session_id) if session_id else []
+    def expand_query(question: str) -> list[str]:
+        """
+        Generates 3 alternative phrasings of the question.
+        Query expansion: searching with multiple phrasings catches more relevant chunks.
+        Falls back to original question if expansion fails.
+        """
+        try:
+            messages = expansion_prompt.format_messages(question=question)
+            raw = str_parser.invoke(model.invoke(messages))
+            # Strip markdown code fences if present
+            raw = raw.strip().strip("```json").strip("```").strip()
+            variants = json.loads(raw)
+            if isinstance(variants, list):
+                return [question] + variants[:3]
+        except Exception:
+            pass
+        return [question]
+
+    def is_document_question(user_input: str, session_id: str) -> bool:
+        """Classifies whether the question needs document retrieval or can be answered from history."""
+        history = get_history_messages(session_id)
         if not history:
             return True
         router_prompt = (
             "Classify this message as either 'document' or 'conversational'.\n"
-            "'conversational' means: greetings, small talk, or questions about "
-            "what was said earlier in THIS conversation.\n"
-            "'document' means: any question needing information from a document.\n"
+            "'conversational': greetings, small talk, or questions about what was said earlier.\n"
+            "'document': any question needing information from a document.\n"
             "Reply with ONLY one word: 'document' or 'conversational'.\n\n"
-            f"Message: {x['input']}"
+            f"Message: {user_input}"
         )
         result = str_parser.invoke(model.invoke(router_prompt)).strip().lower()
         return result != "conversational"
 
-    def get_context(x: dict) -> str:
-        if x.get("needs_retrieval", True):
-            return _format_docs(retriever.invoke(x["rephrased"]))
-        return ""
+    def retrieve_with_expansion(question: str) -> list[Document]:
+        """
+        Retrieves documents using multiple query phrasings and deduplicates results.
+        This is the query expansion step -- more phrasings = better coverage.
+        """
+        variants = expand_query(question)
+        all_docs = []
+        for variant in variants:
+            docs = retriever.invoke(variant)
+            all_docs.extend(docs)
+        return _deduplicate(all_docs)
 
     def invoke(user_input: str, session_id: str) -> dict:
         """
-        Manually manages the full RAG + memory flow:
+        Full RAG pipeline:
         1. Load history
-        2. Rephrase + route
-        3. Retrieve context if needed
-        4. Build prompt + call model
-        5. Save turn to memory
-        6. Parse and return
+        2. Classify question (document vs conversational)
+        3. Rephrase into standalone question
+        4. Expand query into multiple phrasings
+        5. Retrieve + deduplicate chunks
+        6. Build prompt + call model
+        7. Save to memory
+        8. Parse and return
         """
-        # Step 1: load history
         history = get_history_messages(session_id)
 
-        # Step 2: classify and rephrase
-        x = {"input": user_input, "session_id": session_id}
-        needs_retrieval = is_document_question(x)
-        rephrased = rephrase_question(x)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            routing_future = executor.submit(is_document_question, user_input, session_id)
+            rephrase_future = executor.submit(rephrase_question, user_input, session_id)
+            needs_retrieval = routing_future.result()
+            rephrased = rephrase_future.result()
 
-        # Step 3: retrieve context
-        context = _format_docs(retriever.invoke(rephrased)) if needs_retrieval else ""
 
-        # Step 4: build prompt and call model
+        if needs_retrieval:
+            docs = retriever.invoke(rephrased)
+            context = _format_docs(_deduplicate(docs))
+        else:
+            context = ""
+    
+
+        needs_retrieval = is_document_question(user_input, session_id)
+        rephrased = rephrase_question(user_input, session_id)
+
+        if needs_retrieval:
+            docs = retrieve_with_expansion(rephrased)
+            context = _format_docs(docs)
+        else:
+            context = ""
+
         messages = rag_prompt.format_messages(
             context=context,
             history=history,
@@ -90,12 +151,11 @@ def get_rag_chatbot(source_file: str | None = None):
         )
         raw_response = model.invoke(messages)
 
-        # Step 5: save to memory BEFORE parsing
+        # Save to memory BEFORE parsing
         session = get_session_history(session_id)
         session.add_message(HumanMessage(content=user_input))
         session.add_message(AIMessage(content=raw_response.content))
 
-        # Step 6: parse and return
         try:
             parsed = chat_answer_parser.parse(raw_response.content)
             return {"answer": parsed.answer, "confidence": parsed.confidence}

@@ -48,3 +48,17 @@ def get_rephrase_prompt() -> ChatPromptTemplate:
         MessagesPlaceholder(variable_name="history"),
         ("human", "{input}"),
     ])
+
+def get_query_expansion_prompt() -> ChatPromptTemplate:
+    """
+    Generates multiple versions of a question to improve retrieval coverage.
+    Different phrasings catch different relevant chunks in the vector DB.
+    """
+    return ChatPromptTemplate.from_messages([
+        ("system",
+         "Generate 3 different versions of the given question that mean the same thing "
+         "but use different words and phrasing. This helps retrieve more relevant documents.\n"
+         "Return ONLY a JSON array of 3 strings, nothing else.\n"
+         'Example: ["version 1", "version 2", "version 3"]'),
+        ("human", "{question}"),
+    ])
