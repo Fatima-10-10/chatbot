@@ -4,7 +4,7 @@ from pydantic import BaseModel
 class ChatRequest(BaseModel):
     session_id: str
     message: str
-    document_filter: str | None = None  # filename to filter by, or None for all docs
+    document_filter: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -19,3 +19,8 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     chunks_upserted: int
     filename: str
+
+
+class DeleteResponse(BaseModel):
+    filename: str
+    message: str

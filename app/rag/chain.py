@@ -18,6 +18,7 @@ from app.core.memory import get_session_history, get_history_messages
 from app.core.parsers import chat_answer_parser
 from app.core.prompts import get_rag_prompt, get_rephrase_prompt, get_query_expansion_prompt
 from app.rag.retriever import get_retriever
+from app.rag.reranker import rerank
 
 # Load once at module level so the embedding model isn't reloaded on every request
 _retriever_cache: dict = {}
@@ -129,8 +130,14 @@ def get_rag_chatbot(source_file: str | None = None):
 
 
         if needs_retrieval:
-            docs = retriever.invoke(rephrased)
-            context = _format_docs(_deduplicate(docs))
+                # Step 1: retrieve top 10 candidates from Pinecone
+                docs = retriever.invoke(rephrased)
+                # Step 2: deduplicate
+                docs = _deduplicate(docs)
+                # Step 3: rerank — cross-encoder scores each chunk against the query
+                # and returns top 5 in true relevance order
+                docs = rerank(rephrased, docs, top_n=5)
+                context = _format_docs(docs)
         else:
             context = ""
     

@@ -59,3 +59,24 @@ def upsert_documents(chunks: list[Document], filename: str) -> int:
 
     vectorstore.add_documents(chunks)
     return len(chunks)
+
+def delete_document(filename: str) -> None:
+    """
+    Deletes all chunks tagged with source_file=filename from Pinecone.
+    Uses Pinecone's metadata filtering to find and delete matching vectors.
+    """
+    pc = _get_pinecone_client()
+    index = pc.Index(settings.pinecone_index_name)
+
+    # Pinecone doesn't support delete-by-metadata directly in serverless,
+    # so we fetch matching IDs first then delete by ID
+    results = index.query(
+        vector=[0.0] * settings.embedding_dimension,
+        filter={"source_file": {"$eq": filename}},
+        top_k=10000,
+        include_metadata=False,
+    )
+
+    ids = [match["id"] for match in results["matches"]]
+    if ids:
+        index.delete(ids=ids)

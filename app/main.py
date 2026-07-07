@@ -9,7 +9,10 @@ async def lifespan(app: FastAPI):
     print("Loading embedding model...")
     from app.ingestion.embeddings import get_embeddings
     get_embeddings()
-    print("Embedding model ready.")
+    print("Loading reranker model...")
+    from app.rag.reranker import get_reranker
+    get_reranker()
+    print("All models ready.")
     yield
 
 
