@@ -748,7 +748,7 @@
     showTyping();
 
     try {
-      const res = await fetch(`${API}/chat`, {
+      const res = await fetch(`${API}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -766,8 +766,78 @@
         return;
       }
 
-      const data = await res.json();
-      addMessage(data.answer, "bot", data.confidence);
+      // Create bot message bubble for streaming into
+      hideEmptyState();
+      const msgs = document.getElementById("chat-messages");
+      const row = document.createElement("div");
+      row.className = "msg-row bot";
+
+      const avatar = document.createElement("div");
+      avatar.className = "avatar bot";
+      avatar.textContent = "🤖";
+
+      const content = document.createElement("div");
+      content.className = "msg-content";
+
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = "";
+      content.appendChild(bubble);
+
+      const time = document.createElement("div");
+      time.className = "msg-time";
+      time.textContent = getTime();
+      content.appendChild(time);
+
+      row.appendChild(avatar);
+      row.appendChild(content);
+      msgs.appendChild(row);
+
+      // Read the stream token by token
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split("\n");
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") {
+              // Stream finished - parse the full JSON response
+              try {
+                const parsed = JSON.parse(fullText);
+                bubble.textContent = parsed.answer || fullText;
+
+                // Add confidence badge
+                if (parsed.confidence) {
+                  const badge = document.createElement("div");
+                  badge.className = "confidence-badge confidence-" + parsed.confidence.toLowerCase();
+                  badge.textContent = "Confidence: " + parsed.confidence;
+                  content.insertBefore(badge, time);
+                }
+              } catch {
+                // If not valid JSON, just show raw text
+                bubble.textContent = fullText;
+              }
+              break;
+            }
+            try {
+              const token = JSON.parse(data);
+              fullText += token;
+              // Show raw text while streaming, clean up at [DONE]
+              bubble.textContent = fullText;
+              msgs.scrollTop = msgs.scrollHeight;
+            } catch {}
+          }
+        }
+      }
+
     } catch (err) {
       removeTyping();
       addMessage("Could not reach the server. Make sure uvicorn is running.", "bot");

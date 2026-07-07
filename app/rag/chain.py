@@ -169,4 +169,48 @@ def get_rag_chatbot(source_file: str | None = None):
         except Exception:
             return {"answer": raw_response.content, "confidence": "low"}
 
-    return invoke
+    def stream(user_input: str, session_id: str):
+        """
+        Same as invoke() but streams the model's response token by token.
+        Saves to memory after streaming completes.
+        """
+        history = get_history_messages(session_id)
+
+        # Run routing and rephrasing in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            routing_future = executor.submit(is_document_question, user_input, session_id)
+            rephrase_future = executor.submit(rephrase_question, user_input, session_id)
+            needs_retrieval = routing_future.result()
+            rephrased = rephrase_future.result()
+
+        if needs_retrieval:
+            docs = retriever.invoke(rephrased)
+            docs = _deduplicate(docs)
+            docs = rerank(rephrased, docs, top_n=5)
+            context = _format_docs(docs)
+        else:
+            context = ""
+
+        messages = rag_prompt.format_messages(
+            context=context,
+            history=history,
+            input=user_input,
+        )
+
+        # Stream the response token by token
+        full_response = ""
+        for chunk in model.stream(messages):
+            token = chunk.content
+            full_response += token
+            yield token
+
+        # Save complete response to memory after streaming finishes
+        session = get_session_history(session_id)
+        session.add_message(HumanMessage(content=user_input))
+        session.add_message(AIMessage(content=full_response))
+
+    # Return both functions
+    return invoke, stream
+
+
+    
