@@ -9,7 +9,7 @@ from langchain_core.retrievers import BaseRetriever
 from app.ingestion.vectorstore import get_vectorstore
 
 
-def get_retriever(k: int = 8, source_file: str | None = None) -> BaseRetriever:
+def get_retriever(k: int = 10, source_file: str | None = None) -> BaseRetriever:
     """
     Returns a retriever that fetches top-k relevant chunks.
     If source_file is provided, only searches chunks from that document.

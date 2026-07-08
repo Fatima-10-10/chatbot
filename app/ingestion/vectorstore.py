@@ -80,3 +80,30 @@ def delete_document(filename: str) -> None:
     ids = [match["id"] for match in results["matches"]]
     if ids:
         index.delete(ids=ids)
+
+
+def list_documents() -> list[str]:
+    """Returns list of unique source_file values in the index."""
+    pc = _get_pinecone_client()
+    index = pc.Index(settings.pinecone_index_name)
+    seen_docs = set()
+
+    # Use multiple different queries to sample different parts of the index
+    # A zero vector is biased toward one cluster; random vectors cover more ground
+    import random
+    random.seed(42)
+    
+    for _ in range(5):
+        # Random vector to sample different parts of the index
+        random_vector = [random.uniform(-1, 1) for _ in range(settings.embedding_dimension)]
+        results = index.query(
+            vector=random_vector,
+            top_k=100,
+            include_metadata=True,
+        )
+        for match in results["matches"]:
+            source = match.get("metadata", {}).get("source_file")
+            if source:
+                seen_docs.add(source)
+
+    return list(seen_docs)

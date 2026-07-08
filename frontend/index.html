@@ -809,12 +809,12 @@
           if (line.startsWith("data: ")) {
             const data = line.slice(6).trim();
             if (data === "[DONE]") {
-              // Stream finished - parse the full JSON response
               try {
-                const parsed = JSON.parse(fullText);
+                // Clean up any markdown code fences
+                const cleaned = fullText.trim().replace(/```json|```/g, "").trim();
+                const parsed = JSON.parse(cleaned);
                 bubble.textContent = parsed.answer || fullText;
 
-                // Add confidence badge
                 if (parsed.confidence) {
                   const badge = document.createElement("div");
                   badge.className = "confidence-badge confidence-" + parsed.confidence.toLowerCase();
@@ -822,7 +822,6 @@
                   content.insertBefore(badge, time);
                 }
               } catch {
-                // If not valid JSON, just show raw text
                 bubble.textContent = fullText;
               }
               break;

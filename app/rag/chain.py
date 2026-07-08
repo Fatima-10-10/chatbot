@@ -4,7 +4,9 @@ RAG chain with:
 - Question routing (document vs conversational)
 - Query rephrasing (standalone questions from follow-ups)
 - Query expansion (multiple phrasings for better retrieval)
-- Result deduplication (merge results from multiple queries)
+- Reranking (cross-encoder reordering of retrieved chunks)
+- Document-aware retrieval (per-document retrieval in all-documents mode)
+- Streaming support
 """
 
 import json
@@ -20,8 +22,8 @@ from app.core.prompts import get_rag_prompt, get_rephrase_prompt, get_query_expa
 from app.rag.retriever import get_retriever
 from app.rag.reranker import rerank
 
-# Load once at module level so the embedding model isn't reloaded on every request
 _retriever_cache: dict = {}
+
 
 def _get_cached_retriever(k: int, source_file: str | None):
     key = (k, source_file)
@@ -29,12 +31,12 @@ def _get_cached_retriever(k: int, source_file: str | None):
         _retriever_cache[key] = get_retriever(k=k, source_file=source_file)
     return _retriever_cache[key]
 
+
 def _format_docs(docs: list[Document]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
 def _deduplicate(docs: list[Document]) -> list[Document]:
-    """Remove duplicate chunks based on content."""
     seen = set()
     unique = []
     for doc in docs:
@@ -53,7 +55,6 @@ def get_rag_chatbot(source_file: str | None = None):
     expansion_prompt = get_query_expansion_prompt()
 
     def rephrase_question(user_input: str, session_id: str) -> str:
-        """Rewrites follow-up questions into standalone questions."""
         history = get_history_messages(session_id)
         if not history:
             return user_input
@@ -64,25 +65,18 @@ def get_rag_chatbot(source_file: str | None = None):
         return str_parser.invoke(model.invoke(messages))
 
     def expand_query(question: str) -> list[str]:
-        """
-        Generates 3 alternative phrasings of the question.
-        Query expansion: searching with multiple phrasings catches more relevant chunks.
-        Falls back to original question if expansion fails.
-        """
         try:
             messages = expansion_prompt.format_messages(question=question)
             raw = str_parser.invoke(model.invoke(messages))
-            # Strip markdown code fences if present
             raw = raw.strip().strip("```json").strip("```").strip()
             variants = json.loads(raw)
             if isinstance(variants, list):
-                return [question] + variants[:3]
+                return [question] + variants[:2]
         except Exception:
             pass
         return [question]
 
     def is_document_question(user_input: str, session_id: str) -> bool:
-        """Classifies whether the question needs document retrieval or can be answered from history."""
         history = get_history_messages(session_id)
         if not history:
             return True
@@ -97,29 +91,56 @@ def get_rag_chatbot(source_file: str | None = None):
         return result != "conversational"
 
     def retrieve_with_expansion(question: str) -> list[Document]:
-        """
-        Retrieves documents using multiple query phrasings and deduplicates results.
-        This is the query expansion step -- more phrasings = better coverage.
-        """
         variants = expand_query(question)
         all_docs = []
-        for variant in variants:
-            docs = retriever.invoke(variant)
-            all_docs.extend(docs)
+        with ThreadPoolExecutor(max_workers=len(variants)) as executor:
+            futures = {executor.submit(retriever.invoke, v): v for v in variants}
+            for future in as_completed(futures):
+                try:
+                    all_docs.extend(future.result())
+                except Exception:
+                    pass
         return _deduplicate(all_docs)
 
-    def invoke(user_input: str, session_id: str) -> dict:
-        """
-        Full RAG pipeline:
-        1. Load history
-        2. Classify question (document vs conversational)
-        3. Rephrase into standalone question
-        4. Expand query into multiple phrasings
-        5. Retrieve + deduplicate chunks
-        6. Build prompt + call model
-        7. Save to memory
-        8. Parse and return
-        """
+    def _build_context(needs_retrieval: bool, rephrased: str, sf: str | None) -> str:
+        if not needs_retrieval:
+            return ""
+
+        if sf:
+            # Single document mode: retrieve + rerank from that document only
+            docs = retriever.invoke(rephrased)
+            if len(rephrased.split()) <= 5:
+                extra_docs = retrieve_with_expansion(rephrased)
+                docs = docs + extra_docs
+            docs = _deduplicate(docs)
+            docs = rerank(rephrased, docs, top_n=8)
+            return _format_docs(docs)
+        else:
+            # All documents mode: retrieve from each document separately
+            # so no single document dominates the results
+            from app.ingestion.vectorstore import list_documents, get_vectorstore
+            all_doc_names = list_documents()
+
+            if not all_doc_names:
+                return ""
+
+            all_docs = []
+            vs = get_vectorstore()
+
+            for doc_name in all_doc_names:
+                doc_results = vs.similarity_search(
+                    rephrased,
+                    k=3,
+                    filter={"source_file": {"$eq": doc_name}}
+                )
+                if doc_results:
+                    reranked = rerank(rephrased, doc_results, top_n=2)
+                    all_docs.extend(reranked)
+
+            return _format_docs(all_docs)
+
+    def _prepare(user_input: str, session_id: str, sf: str | None = None):
+        """Shared preparation logic for both invoke and stream."""
         history = get_history_messages(session_id)
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -128,37 +149,19 @@ def get_rag_chatbot(source_file: str | None = None):
             needs_retrieval = routing_future.result()
             rephrased = rephrase_future.result()
 
-
-        if needs_retrieval:
-                # Step 1: retrieve top 10 candidates from Pinecone
-                docs = retriever.invoke(rephrased)
-                # Step 2: deduplicate
-                docs = _deduplicate(docs)
-                # Step 3: rerank — cross-encoder scores each chunk against the query
-                # and returns top 5 in true relevance order
-                docs = rerank(rephrased, docs, top_n=5)
-                context = _format_docs(docs)
-        else:
-            context = ""
-    
-
-        needs_retrieval = is_document_question(user_input, session_id)
-        rephrased = rephrase_question(user_input, session_id)
-
-        if needs_retrieval:
-            docs = retrieve_with_expansion(rephrased)
-            context = _format_docs(docs)
-        else:
-            context = ""
-
+        context = _build_context(needs_retrieval, rephrased, sf)
         messages = rag_prompt.format_messages(
             context=context,
             history=history,
             input=user_input,
         )
+        return history, messages
+
+    def invoke(user_input: str, session_id: str) -> dict:
+        # Pass source_file (captured from outer scope) to _prepare
+        history, messages = _prepare(user_input, session_id, source_file)
         raw_response = model.invoke(messages)
 
-        # Save to memory BEFORE parsing
         session = get_session_history(session_id)
         session.add_message(HumanMessage(content=user_input))
         session.add_message(AIMessage(content=raw_response.content))
@@ -170,47 +173,17 @@ def get_rag_chatbot(source_file: str | None = None):
             return {"answer": raw_response.content, "confidence": "low"}
 
     def stream(user_input: str, session_id: str):
-        """
-        Same as invoke() but streams the model's response token by token.
-        Saves to memory after streaming completes.
-        """
-        history = get_history_messages(session_id)
+        # Pass source_file (captured from outer scope) to _prepare
+        history, messages = _prepare(user_input, session_id, source_file)
 
-        # Run routing and rephrasing in parallel
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            routing_future = executor.submit(is_document_question, user_input, session_id)
-            rephrase_future = executor.submit(rephrase_question, user_input, session_id)
-            needs_retrieval = routing_future.result()
-            rephrased = rephrase_future.result()
-
-        if needs_retrieval:
-            docs = retriever.invoke(rephrased)
-            docs = _deduplicate(docs)
-            docs = rerank(rephrased, docs, top_n=5)
-            context = _format_docs(docs)
-        else:
-            context = ""
-
-        messages = rag_prompt.format_messages(
-            context=context,
-            history=history,
-            input=user_input,
-        )
-
-        # Stream the response token by token
         full_response = ""
         for chunk in model.stream(messages):
             token = chunk.content
             full_response += token
             yield token
 
-        # Save complete response to memory after streaming finishes
         session = get_session_history(session_id)
         session.add_message(HumanMessage(content=user_input))
         session.add_message(AIMessage(content=full_response))
 
-    # Return both functions
     return invoke, stream
-
-
-    
