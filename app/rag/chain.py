@@ -82,8 +82,9 @@ def get_rag_chatbot(source_file: str | None = None):
             return True
         router_prompt = (
             "Classify this message as either 'document' or 'conversational'.\n"
-            "'conversational': greetings, small talk, or questions about what was said earlier.\n"
-            "'document': any question needing information from a document.\n"
+            "'conversational': ONLY greetings, small talk, or questions about what was said earlier in THIS conversation (e.g. 'what did I just ask', 'what is my name').\n"
+            "'document': ANY question asking for information, facts, explanations, or descriptions — including 'tell me about', 'explain', 'describe', 'what is', 'how does', 'who is', etc.\n"
+            "When in doubt, classify as 'document'.\n"
             "Reply with ONLY one word: 'document' or 'conversational'.\n\n"
             f"Message: {user_input}"
         )

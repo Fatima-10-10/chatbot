@@ -496,15 +496,62 @@
     }
 
     .clear-btn:hover { border-color: var(--accent); color: var(--accent); }
+  
+    /* Mobile responsive */
+    @media (max-width: 768px) {
+      .sidebar {
+        position: fixed;
+        left: -280px;
+        top: 0;
+        height: 100vh;
+        z-index: 100;
+        transition: left 0.3s ease;
+        box-shadow: var(--shadow-lg);
+      }
+
+      .sidebar.open {
+        left: 0;
+      }
+
+      .overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 99;
+      }
+
+      .overlay.show { display: block; }
+
+      .menu-btn {
+        display: flex !important;
+      }
+
+      .main { width: 100%; }
+    }
+
+    .menu-btn {
+      display: none;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-primary);
+      font-size: 20px;
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    .menu-btn:hover { background: var(--bg-secondary); }  
   </style>
 </head>
 <body>
+<div class="overlay" id="overlay"></div>  
 
 <aside class="sidebar">
   <div class="logo">
     <div class="logo-icon">🤖</div>
     <div>
-      <div class="logo-text">RAG Chatbot</div>
+      <div class="logo-text">DocAssit</div>
       <div class="logo-sub">LangChain + Groq + Pinecone</div>
     </div>
   </div>
@@ -545,11 +592,14 @@
 
 <main class="main">
   <header class="chat-header">
-    <div>
-      <div class="chat-header-title">
-        <span class="status-dot"></span>Document Assistant
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button class="menu-btn" id="menu-btn">☰</button>
+      <div>
+        <div class="chat-header-title">
+          <span class="status-dot"></span>Document Assistant
+        </div>
+        <div class="chat-header-sub" id="active-doc-label">Chatting with: all documents</div>
       </div>
-      <div class="chat-header-sub" id="active-doc-label">Chatting with: all documents</div>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <button class="clear-btn" onclick="clearChat()">Clear chat</button>
@@ -590,7 +640,35 @@
 </main>
 
 <script>
-  const API = "http://127.0.0.1:8000";
+  // Mobile sidebar toggle
+  const menuBtn = document.getElementById("menu-btn");
+  const sidebar = document.querySelector(".sidebar");
+  const overlay = document.getElementById("overlay");
+
+  menuBtn.addEventListener("click", () => {
+    sidebar.classList.add("open");
+    overlay.classList.add("show");
+  });
+
+  overlay.addEventListener("click", () => {
+    sidebar.classList.remove("open");
+    overlay.classList.remove("show");
+  });
+
+  // Close sidebar when doc selected on mobile
+  function setActiveDoc(filename, el) {
+    activeDocument = filename;
+    if (currentActiveEl) currentActiveEl.classList.remove("active");
+    el.classList.add("active");
+    currentActiveEl = el;
+    document.getElementById("active-doc-label").textContent =
+      filename ? "Chatting with: " + filename : "Chatting with: all documents";
+    // Close sidebar on mobile after selection
+    sidebar.classList.remove("open");
+    overlay.classList.remove("show");
+  }  
+  const API = window.location.origin;
+
   const sessionId = "session-" + Math.random().toString(36).slice(2, 8);
   document.getElementById("session-badge").textContent = "Session: " + sessionId.slice(-6);
 
@@ -815,12 +893,6 @@
                 const parsed = JSON.parse(cleaned);
                 bubble.textContent = parsed.answer || fullText;
 
-                if (parsed.confidence) {
-                  const badge = document.createElement("div");
-                  badge.className = "confidence-badge confidence-" + parsed.confidence.toLowerCase();
-                  badge.textContent = "Confidence: " + parsed.confidence;
-                  content.insertBefore(badge, time);
-                }
               } catch {
                 bubble.textContent = fullText;
               }

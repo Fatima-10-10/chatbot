@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.api import routes_chat, routes_ingest
 
 
@@ -14,15 +16,12 @@ async def lifespan(app: FastAPI):
     get_reranker()
     print("All models ready.")
 
-    # Auto-ingest handbook if not already in Pinecone
     print("Checking handbook ingestion...")
     from app.ingestion.vectorstore import get_vectorstore, upsert_documents, create_index_if_missing
     from app.ingestion.loader import load_and_split
 
     create_index_if_missing()
     vs = get_vectorstore()
-
-    # Check by metadata tag instead of semantic search to avoid false positives
     existing = vs.similarity_search(
         "aurora robotics",
         k=1,
@@ -51,7 +50,10 @@ app.add_middleware(
 app.include_router(routes_chat.router)
 app.include_router(routes_ingest.router)
 
+# Serve frontend as static files
+app.mount("/static", StaticFiles(directory="frontend"), name="static")
+
 
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return FileResponse("frontend/index.html")
